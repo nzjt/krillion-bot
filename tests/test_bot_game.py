@@ -37,11 +37,11 @@ def wire(bot, monkeypatch, channel: FakeChannel):
 
 
 def test_banned_message_gets_reaction(bot):
-    bot.service.storage.ban(1, 1, banned_by=ADMIN, reason=None, at=FakeMessage("x").created_at)
+    bot.service.storage.ban(0, 1, banned_by=ADMIN, reason=None, at=FakeMessage("x").created_at)
     msg = FakeMessage(share(58, 340))
     asyncio.run(bot.on_message(msg))
     assert msg.reactions == ["🚫"] and msg.replies == []
-    assert bot.service.storage.get_result(1, 58, 1) is None
+    assert bot.service.storage.get_result(0, 58, 1) is None
 
 
 def test_sunday_close_posts_weekly_recap(bot, monkeypatch):

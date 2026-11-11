@@ -29,7 +29,9 @@ class Fake:
         self.user = SimpleNamespace(
             id=self.user_id, mention=f"<@{self.user_id}>", display_name=self.name
         )
-        self.response = SimpleNamespace(send_message=self._send, defer=self._defer)
+        self.response = SimpleNamespace(
+            send_message=self._send, defer=self._defer, is_done=self._is_done
+        )
         self.followup = SimpleNamespace(send=self._send)
 
     async def _send(self, content=None, **kwargs):
@@ -39,6 +41,9 @@ class Fake:
 
     async def _defer(self, **_):
         self.deferred = True
+
+    def _is_done(self):
+        return self.deferred
 
     @property
     def text(self) -> str:
@@ -67,7 +72,8 @@ def share(n: int, score: int, tiers: str | None = None) -> str:
 
 def post(bot, uid, name, text, when=NOW):
     return bot.service.submit(
-        guild_id=1,
+        guild_id=0,
+        source_guild_id=1,
         user_id=uid,
         display_name=name,
         text=text,
@@ -126,7 +132,7 @@ def test_stats_and_streak(seeded):
 def test_skips_and_history(seeded):
     post(seeded, 3, "carol", share(58, 100))
     seeded.service.add_manual(
-        guild_id=1,
+        guild_id=0,
         user_id=3,
         display_name="carol",
         puzzle_number=55,
@@ -233,7 +239,7 @@ def test_admin_ban_removes_current_result(kb):
     a = Fake(ADMIN, name="admin")
     run(kb, "krillion admin ban", a, member(2, "bob"))
     assert "Removed their Krillion #58 result (340 pts)." in a.embed.description
-    assert kb.service.storage.results_for(1, 58) == []
+    assert kb.service.storage.results_for(0, 58) == []
 
 
 def test_admin_invalidate(kb):
@@ -244,7 +250,7 @@ def test_admin_invalidate(kb):
         "Removed `bob`'s Krillion #58 result (340 pts).\n"
         "Reason: correction They can post a corrected result."
     )
-    assert kb.service.storage.results_for(1, 58) == []
+    assert kb.service.storage.results_for(0, 58) == []
     refused = Fake(2, name="mallory")
     run(kb, "krillion admin invalidate", refused, member(2, "bob"))
     assert refused.sent[-1][2] is True
@@ -283,4 +289,4 @@ def test_manage_server_is_not_admin(kb):
     run(kb, "krillion admin ban", Fake(ADMIN, name="admin"), member(2, "bob"))
     run(kb, "krillion admin unban", mod, member(2, "bob"))
     assert mod.sent[-1][2] is True
-    assert kb.service.storage.is_banned(1, 2)
+    assert kb.service.storage.is_banned(0, 2)

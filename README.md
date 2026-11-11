@@ -26,7 +26,7 @@ SQLite on disk, ~60 MB RAM, no other services.
   isn't lost.
 - **Daily leaderboard**: once the grace period ends the bot posts the final
   standings for that puzzle with each player's rating change. It is posted to
-  `LEADERBOARD_CHANNEL_ID`, or to the channel the results were shared in.
+  `LEADERBOARD_CHANNEL_ID`, or to every channel where that day's results were shared.
   Days missed while the bot was offline are closed out on the next start.
 - **Table image**: leaderboards are rendered as a PNG table (rank, name and
   rating rank, the result's emoji row, score, performance, rating change) in
@@ -181,7 +181,7 @@ All settings live in `.env` (see `.env.example`):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | – | Bot token (required) |
-| `LEADERBOARD_CHANNEL_ID` | empty | Channel for the daily post; empty = where results were shared |
+| `LEADERBOARD_CHANNEL_ID` | empty | Channel for the daily post; empty = every channel results were shared in |
 | `RESULTS_CHANNEL_ID` | empty | Only read results from this channel; empty = all channels |
 | `DATABASE_PATH` | `data/krillion.sqlite3` | SQLite file |
 | `LATE_GRACE_MINUTES` | `10` | How long after reset the previous puzzle is still accepted |

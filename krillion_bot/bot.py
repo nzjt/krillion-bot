@@ -7,11 +7,13 @@ from datetime import date, datetime, timedelta
 import discord
 from discord import app_commands
 
-from . import commands, commands_admin
+from . import commands, commands_admin, commands_noillirk
 from .analytics import WeekRecap, build_week_recap
 from .config import Config
-from .discord_util import board_message, png_file, utcnow
+from .discord_util import board_message, guild_members, png_file, utcnow
 from .formatting import final_table
+from .models import GLOBAL_GUILD_ID
+from .parser import NOILLIRK_HEADER_RE, NOILLIRK_SCOPE
 from .plot_week import week_plot
 from .puzzle import PuzzleCalendar
 from .service import FinalizedDay, KrillionService, SubmitStatus
@@ -30,13 +32,14 @@ class KrillionBot(discord.Client):
     def __init__(self, config: Config, service: KrillionService) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.members = False
+        intents.members = True
         super().__init__(intents=intents)
         self.config = config
         self.service = service
         self.tree = app_commands.CommandTree(self)
         group = commands.register(self)
         commands_admin.register(self, group)
+        commands_noillirk.register(self)
         self._scheduler: asyncio.Task[None] | None = None
 
     @staticmethod
@@ -93,14 +96,18 @@ class KrillionBot(discord.Client):
         wanted = self.config.results_channel_id
         if wanted is not None and message.channel.id != wanted:
             return
+        scope = NOILLIRK_SCOPE if NOILLIRK_HEADER_RE.search(message.content) else GLOBAL_GUILD_ID
+        game = "Noillirk" if scope == NOILLIRK_SCOPE else "Krillion"
+        emo = "🚀" if scope == NOILLIRK_SCOPE else "🦐"
         outcome = self.service.submit(
-            guild_id=message.guild.id,
+            guild_id=scope,
             user_id=message.author.id,
             display_name=message.author.display_name,
             text=message.content,
             channel_id=message.channel.id,
             message_id=message.id,
             now=message.created_at,
+            source_guild_id=message.guild.id,
         )
         if outcome.status is SubmitStatus.NOT_A_RESULT:
             if "krillion" in message.content.lower():
@@ -113,7 +120,8 @@ class KrillionBot(discord.Client):
         assert outcome.parsed is not None
         n = outcome.parsed.puzzle_number
         log.info(
-            "Krillion #%d from %s in guild %s: %s (%s)",
+            "%s #%d from %s in guild %s: %s (%s)",
+            game,
             n,
             message.author.id,
             message.guild.id,
@@ -122,31 +130,31 @@ class KrillionBot(discord.Client):
         )
         try:
             if outcome.status is SubmitStatus.ACCEPTED:
-                await message.add_reaction("🦐")
+                await message.add_reaction(emo)
                 await message.reply(
-                    f"Received Krillion #{n} score from **{message.author.display_name}**: "
-                    f"{outcome.parsed.score} 🦐",
+                    f"Received {game} #{n} score from **{message.author.display_name}**: "
+                    f"{outcome.parsed.score} {emo}",
                     mention_author=False,
                 )
             elif outcome.status is SubmitStatus.DUPLICATE:
                 assert outcome.existing is not None
                 await message.add_reaction("⚠️")
                 await message.reply(
-                    f"Already have your Krillion #{n} result ({outcome.existing.score}) — "
+                    f"Already have your {game} #{n} result ({outcome.existing.score}) — "
                     "keeping the first one.",
                     mention_author=False,
                 )
             elif outcome.status is SubmitStatus.TOO_LATE:
                 await message.add_reaction("⏰")
                 await message.reply(
-                    f"Krillion #{n} has already closed — today's puzzle is "
+                    f"{game} #{n} has already closed — today's puzzle is "
                     f"#{outcome.current_puzzle}.",
                     mention_author=False,
                 )
             elif outcome.status is SubmitStatus.NOT_YET:
                 await message.add_reaction("❓")
                 await message.reply(
-                    f"Krillion #{n} isn't out yet — today's puzzle is #{outcome.current_puzzle}.",
+                    f"{game} #{n} isn't out yet — today's puzzle is #{outcome.current_puzzle}.",
                     mention_author=False,
                 )
             elif outcome.status is SubmitStatus.BANNED:
@@ -169,34 +177,71 @@ class KrillionBot(discord.Client):
             await asyncio.sleep(max(1.0, (wake - now).total_seconds() + 1))
 
     async def _announce(self, day: FinalizedDay) -> None:
-        channel_id = self.config.leaderboard_channel_id or day.channel_id
-        channel = await self._messageable(channel_id)
-        if channel is None:
-            return
-        tiers = {
-            r.user_id: r.tiers
-            for r in self.service.storage.results_for(day.guild_id, day.puzzle_number)
-        }
-        board = final_table(
-            day.puzzle_number,
-            self.service.calendar.date_for(day.puzzle_number),
-            day.entries,
-            day.players,
-            tiers,
-            day.decay,
-        )
-        await channel.send(**board_message(board, f"krillion-{day.puzzle_number}.png"))
-        log.info("Posted Krillion #%d results for guild %s", day.puzzle_number, day.guild_id)
+        results = self.service.storage.results_for(day.guild_id, day.puzzle_number)
+        tiers = {r.user_id: r.tiers for r in results}
+        game = "Noillirk" if day.guild_id == NOILLIRK_SCOPE else "Krillion"
+        puzzle_date = self.service.calendar_for(day.guild_id).date_for(day.puzzle_number)
+        # One board per source server: global rating, but each guild only sees
+        # results shared in its own channels.
+        by_guild: dict[int, list] = {}
+        for r in results:
+            by_guild.setdefault(r.source_guild_id, []).append(r)
+        posted = 0
+        for src, gres in by_guild.items():
+            if self.config.leaderboard_channel_id is not None:
+                channel_ids = (self.config.leaderboard_channel_id,)
+            else:
+                counts: dict[int, int] = {}
+                for r in gres:
+                    counts[r.channel_id] = counts.get(r.channel_id, 0) + 1
+                channel_ids = (max(counts, key=lambda c: counts[c]),)
+            guild = self.get_guild(src)
+            mem = await guild_members(guild, {e.user_id for e in day.entries})
+            uids = (
+                {r.user_id for r in gres}
+                if mem is None
+                else {e.user_id for e in day.entries if e.user_id in mem}
+            )
+            entries = self.service.local_placements([e for e in day.entries if e.user_id in uids])
+            board = final_table(
+                day.puzzle_number,
+                puzzle_date,
+                entries,
+                {u: day.players[u] for u in uids if u in day.players},
+                {u: tiers[u] for u in uids},
+                None,
+                game=game,
+            )
+            for channel_id in channel_ids:
+                channel = await self._messageable(channel_id)
+                if channel is None:
+                    continue
+                # discord.File streams are single-use; rebuild per channel.
+                await channel.send(
+                    **board_message(board, f"{game.lower()}-{day.puzzle_number}.png")
+                )
+                posted += 1
+        log.info("Posted %s #%d results to %d channel(s)", game, day.puzzle_number, posted)
 
     # -- weekly recap ----------------------------------------------------
 
-    def week_recap(self, guild_id: int, anchor: date, today: date) -> WeekRecap:
+    def week_recap(
+        self,
+        guild_id: int,
+        anchor: date,
+        today: date,
+        source_guild: int | None = None,
+    ) -> WeekRecap:
         storage = self.service.storage
         calendar = self.service.calendar
         low = calendar.number_for_date(anchor - timedelta(days=anchor.weekday() + 7))
         high = calendar.number_for_date(anchor + timedelta(days=6 - anchor.weekday()))
         return build_week_recap(
-            storage.results_between(guild_id, low, high),
+            [
+                r
+                for r in storage.results_between(guild_id, low, high)
+                if source_guild is None or r.user_id in source_guild
+            ],
             storage.history_between(guild_id, low, high),
             calendar,
             anchor,
@@ -225,5 +270,6 @@ def build(config: Config) -> KrillionBot:
         decay_base=config.decay_base,
         decay_max=config.decay_max,
         decay_grace=config.decay_grace,
+        noillirk_epoch=config.noillirk_epoch_date,
     )
     return KrillionBot(config, service)

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from enum import Enum
 
-from .parser import ParsedResult, parse_result
+from .parser import (
+    NOILLIRK_HEADER_RE,
+    NOILLIRK_SCOPE,
+    ParsedResult,
+    parse_noillirk,
+    parse_result,
+)
 from .puzzle import PuzzleCalendar
 from .rating import (
     DAMPING,
@@ -41,7 +47,7 @@ class SubmitOutcome:
 class FinalizedDay:
     guild_id: int
     puzzle_number: int
-    channel_id: int
+    channel_ids: tuple[int, ...]
     entries: list[RatingEntry]
     players: dict[int, Player]
     decay: dict[int, float]
@@ -78,9 +84,11 @@ class KrillionService:
         decay_base: float = DECAY_BASE,
         decay_max: float = DECAY_MAX,
         decay_grace: int = DECAY_GRACE,
+        noillirk_epoch: date | None = None,
     ) -> None:
         self.storage = storage
         self.calendar = calendar or PuzzleCalendar()
+        self.noillirk_calendar = PuzzleCalendar(epoch=noillirk_epoch or date(2026, 9, 27))
         self.grace = grace
         self.damping = damping
         self.decay_base = decay_base
@@ -102,11 +110,15 @@ class KrillionService:
 
     # -- submissions -----------------------------------------------------
 
-    def is_open(self, puzzle_number: int, now: datetime) -> bool:
+    def calendar_for(self, guild_id: int) -> PuzzleCalendar:
+        return self.noillirk_calendar if guild_id == NOILLIRK_SCOPE else self.calendar
+
+    def is_open(self, guild_id: int, puzzle_number: int, now: datetime) -> bool:
         """A puzzle accepts results from its start until reset + grace."""
-        if now < self.calendar.start(puzzle_number):
+        cal = self.calendar_for(guild_id)
+        if now < cal.start(puzzle_number):
             return False
-        return now < self.calendar.end(puzzle_number) + self.grace
+        return now < cal.end(puzzle_number) + self.grace
 
     def submit(
         self,
@@ -118,13 +130,25 @@ class KrillionService:
         channel_id: int,
         message_id: int | None,
         now: datetime,
+        source_guild_id: int = 0,
     ) -> SubmitOutcome:
-        current = self.calendar.current(now)
-        parsed = parse_result(text)
+        noillirk = NOILLIRK_HEADER_RE.search(text) is not None
+        scope = NOILLIRK_SCOPE if noillirk else guild_id
+        cal = self.calendar_for(scope)
+        current = cal.current(now)
+        parsed = parse_noillirk(text) if noillirk else parse_result(text)
         if parsed is None:
             return SubmitOutcome(SubmitStatus.NOT_A_RESULT, None, current)
         return self._record(
-            guild_id, user_id, display_name, parsed, channel_id, message_id, now, current
+            scope,
+            user_id,
+            display_name,
+            parsed,
+            channel_id,
+            message_id,
+            now,
+            current,
+            source_guild_id,
         )
 
     def _record(
@@ -137,13 +161,14 @@ class KrillionService:
         message_id: int | None,
         now: datetime,
         current: int,
+        source_guild_id: int = 0,
     ) -> SubmitOutcome:
         n = parsed.puzzle_number
         if self.storage.is_banned(guild_id, user_id):
             return SubmitOutcome(SubmitStatus.BANNED, parsed, current)
         if n > current:
             return SubmitOutcome(SubmitStatus.NOT_YET, parsed, current)
-        if not self.is_open(n, now) or self.storage.is_finalized(guild_id, n):
+        if not self.is_open(guild_id, n, now) or self.storage.is_finalized(guild_id, n):
             return SubmitOutcome(SubmitStatus.TOO_LATE, parsed, current)
         self.storage.upsert_player(guild_id, user_id, display_name)
         result = Result(
@@ -155,11 +180,18 @@ class KrillionService:
             channel_id=channel_id,
             message_id=message_id,
             submitted_at=now,
+            source_guild_id=source_guild_id,
         )
         if not self.storage.add_result(result):
             existing = self.storage.get_result(guild_id, n, user_id)
             return SubmitOutcome(SubmitStatus.DUPLICATE, parsed, current, existing)
         return SubmitOutcome(SubmitStatus.ACCEPTED, parsed, current)
+
+    @staticmethod
+    def local_placements(entries: list[RatingEntry]) -> list[RatingEntry]:
+        """Re-rank ``entries`` among themselves — per-server boards on a global rating."""
+        places = placements({e.user_id: e.score for e in entries})
+        return [replace(e, placement=places[e.user_id]) for e in entries]
 
     def ranked_players(self, guild_id: int, now: datetime, include_inactive: bool) -> list[Player]:
         """Public ratings board: by default nobody
@@ -206,7 +238,7 @@ class KrillionService:
         return [
             (guild_id, n)
             for guild_id, n in self.storage.unfinalized_puzzles()
-            if not self.is_open(n, now)
+            if not self.is_open(guild_id, n, now)
         ]
 
     def finalize(self, guild_id: int, puzzle_number: int, now: datetime) -> FinalizedDay | None:
@@ -233,15 +265,16 @@ class KrillionService:
             for r in results
         ]
         self.storage.finalize(guild_id, puzzle_number, entries, now, outcome.decay)
-        # Post to the channel the day's results were mostly shared in.
+        # Post to every channel the day's results were shared in (any server),
+        # busiest channel first.
         channel_counts: dict[int, int] = {}
         for r in results:
             channel_counts[r.channel_id] = channel_counts.get(r.channel_id, 0) + 1
-        channel_id = max(channel_counts, key=lambda c: channel_counts[c])
+        channel_ids = tuple(sorted(channel_counts, key=lambda c: -channel_counts[c]))
         updated = {
             p.user_id: p for p in self.storage.players(guild_id, [r.user_id for r in results])
         }
-        return FinalizedDay(guild_id, puzzle_number, channel_id, entries, updated, outcome.decay)
+        return FinalizedDay(guild_id, puzzle_number, channel_ids, entries, updated, outcome.decay)
 
     # -- admin -----------------------------------------------------------
 
@@ -265,6 +298,7 @@ class KrillionService:
         tiers: str,
         channel_id: int,
         now: datetime,
+        source_guild_id: int = 0,
     ) -> Invalidation | None:
         """Admin insert of a result for any past or current puzzle.
 
@@ -281,10 +315,11 @@ class KrillionService:
             channel_id=channel_id,
             message_id=None,
             submitted_at=now,
+            source_guild_id=source_guild_id,
         )
         if not self.storage.add_result(result):
             return None
-        if self.is_open(puzzle_number, now):
+        if self.is_open(guild_id, puzzle_number, now):
             return Invalidation(result, 0)
         return Invalidation(result, self.replay(guild_id, now))
 
@@ -298,6 +333,7 @@ class KrillionService:
         channel_id: int,
         message_id: int,
         created_at: datetime,
+        source_guild_id: int = 0,
     ) -> bool:
         """Backfill a share from channel history, judged by when it was posted.
 
@@ -308,7 +344,7 @@ class KrillionService:
         if parsed is None or self.storage.is_banned(guild_id, user_id):
             return False
         n = parsed.puzzle_number
-        if not self.is_open(n, created_at):
+        if not self.is_open(guild_id, n, created_at):
             return False
         self.storage.upsert_player(guild_id, user_id, display_name)
         return self.storage.add_result(
@@ -321,6 +357,7 @@ class KrillionService:
                 channel_id=channel_id,
                 message_id=message_id,
                 submitted_at=created_at,
+                source_guild_id=source_guild_id,
             )
         )
 
@@ -352,7 +389,7 @@ class KrillionService:
         days = dict(self.storage.finalized_puzzles(guild_id))
         if now is not None:
             for g, n in self.storage.unfinalized_puzzles():
-                if g == guild_id and n not in days and not self.is_open(n, now):
+                if g == guild_id and n not in days and not self.is_open(guild_id, n, now):
                     days[n] = now
         self.storage.reset_ratings(guild_id)
         return sum(self.finalize(guild_id, n, days[n]) is not None for n in sorted(days))

@@ -100,7 +100,7 @@ def test_finalize_applies_rating_and_posts_once(service):
     days = service.finalize_due(close)
     assert len(days) == 1
     day = days[0]
-    assert (day.guild_id, day.puzzle_number, day.channel_id) == (GUILD, 58, CHANNEL)
+    assert (day.guild_id, day.puzzle_number, day.channel_ids) == (GUILD, 58, (CHANNEL,))
     by_user = {e.user_id: e for e in day.entries}
     assert by_user[1].placement == 1
     assert by_user[2].placement == 2 and by_user[3].placement == 2

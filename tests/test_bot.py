@@ -96,7 +96,7 @@ def make_config(tmp_path: Path, **overrides) -> Config:
 
 def test_build_registers_commands_and_creates_db(tmp_path):
     b = build(make_config(tmp_path))
-    assert [c.name for c in b.tree.get_commands()] == ["krillion"]
+    assert [c.name for c in b.tree.get_commands()] == ["krillion", "noillirk"]
     assert b.config.admin_user_ids == {ADMIN}
     assert (tmp_path / "db.sqlite3").exists()
     assert b.intents.message_content
@@ -107,7 +107,7 @@ def test_on_message_records_result(bot):
     asyncio.run(bot.on_message(msg))
     assert msg.reactions == ["🦐"]
     assert msg.replies == ["Received Krillion #58 score from **alice**: 340 🦐"]
-    assert bot.service.storage.get_result(1, 58, 1).score == 340
+    assert bot.service.storage.get_result(0, 58, 1).score == 340
 
 
 def test_on_message_ignores_bots_and_chatter(bot):
@@ -136,6 +136,6 @@ def test_results_channel_filter(tmp_path):
     service = KrillionService(Storage(":memory:"), PuzzleCalendar())
     b = KrillionBot(cfg, service)
     asyncio.run(b.on_message(FakeMessage(f"Krillion #58\n340\n\n{tiers_for(340)}", channel_id=11)))
-    assert service.storage.get_result(1, 58, 1) is None
+    assert service.storage.get_result(0, 58, 1) is None
     asyncio.run(b.on_message(FakeMessage(f"Krillion #58\n340\n\n{tiers_for(340)}", channel_id=10)))
-    assert service.storage.get_result(1, 58, 1).score == 340
+    assert service.storage.get_result(0, 58, 1).score == 340

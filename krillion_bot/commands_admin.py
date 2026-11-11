@@ -8,7 +8,8 @@ import discord
 from discord import app_commands
 
 from .commands import PUZZLE_DESCRIBE
-from .discord_util import alert, guild_of, ok, reply, resolve_puzzle
+from .discord_util import alert, ok, reply, resolve_puzzle
+from .models import GLOBAL_GUILD_ID
 
 if TYPE_CHECKING:
     from .bot import KrillionBot
@@ -24,7 +25,7 @@ def register(bot: KrillionBot, parent: app_commands.Group) -> None:
 
     async def gate(interaction: discord.Interaction) -> int | None:
         """The guild id if the caller is an admin, else ``None`` after replying."""
-        guild_id = guild_of(interaction)
+        guild_id = GLOBAL_GUILD_ID
         if not bot.is_admin(interaction.user, guild_id):
             await reply(interaction, alert("Only Krillion admins can do that."), ephemeral=True)
             return None

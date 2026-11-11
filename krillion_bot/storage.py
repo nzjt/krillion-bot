@@ -5,11 +5,20 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import Player, PlayerStats, RatingEntry, Result
+from .models import GLOBAL_GUILD_ID, Player, PlayerStats, RatingEntry, Result
+from .parser import NOILLIRK_SCOPE
 from .rating import STARTING_RATING
 from .storage_game import GameStorageMixin
 
-__all__ = ["Player", "PlayerStats", "RatingEntry", "Result", "Storage", "RATING_ENGINE"]
+__all__ = [
+    "GLOBAL_GUILD_ID",
+    "Player",
+    "PlayerStats",
+    "RatingEntry",
+    "Result",
+    "Storage",
+    "RATING_ENGINE",
+]
 
 RATING_ENGINE = "cf-queens-1"
 """Bumped whenever the rating maths changes; a mismatch triggers a full replay."""
@@ -30,6 +39,7 @@ CREATE TABLE IF NOT EXISTS results (
     score         INTEGER NOT NULL,
     tiers         TEXT    NOT NULL DEFAULT '',
     channel_id    INTEGER NOT NULL,
+    source_guild_id INTEGER NOT NULL DEFAULT 0,
     message_id    INTEGER,
     submitted_at  TEXT    NOT NULL,
     PRIMARY KEY (guild_id, puzzle_number, user_id)
@@ -103,6 +113,31 @@ class Storage(GameStorageMixin):
         }
         if "performance" not in columns:
             self._conn.execute("ALTER TABLE rating_history ADD COLUMN performance REAL")
+        rcols = {r["name"] for r in self._conn.execute("PRAGMA table_info(results)").fetchall()}
+        if "source_guild_id" not in rcols:
+            self._conn.execute(
+                "ALTER TABLE results ADD COLUMN source_guild_id INTEGER NOT NULL DEFAULT 0"
+            )
+        # Global scope: fold per-guild rows written before the merge into the
+        # shared scope — but never the Noillirk scope, which is a separate game.
+        # UPDATE OR IGNORE keeps the row written first on a primary-key
+        # collision; the leftover losers are then deleted.
+        for table in (
+            "players",
+            "results",
+            "finalized_days",
+            "rating_history",
+            "bans",
+            "guild_admins",
+        ):
+            self._conn.execute(
+                f"UPDATE OR IGNORE {table} SET guild_id = ? WHERE guild_id NOT IN (?, ?)",
+                (GLOBAL_GUILD_ID, GLOBAL_GUILD_ID, NOILLIRK_SCOPE),
+            )
+            self._conn.execute(
+                f"DELETE FROM {table} WHERE guild_id NOT IN (?, ?)",
+                (GLOBAL_GUILD_ID, NOILLIRK_SCOPE),
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -177,8 +212,8 @@ class Storage(GameStorageMixin):
             """
             INSERT OR IGNORE INTO results
                 (guild_id, puzzle_number, user_id, score, tiers, channel_id, message_id,
-                 submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, source_guild_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.guild_id,
@@ -189,6 +224,7 @@ class Storage(GameStorageMixin):
                 result.channel_id,
                 result.message_id,
                 _iso(result.submitted_at),
+                result.source_guild_id,
             ),
         )
         return cur.rowcount == 1
@@ -210,13 +246,17 @@ class Storage(GameStorageMixin):
             )
         return existing
 
-    def results_for(self, guild_id: int, puzzle_number: int) -> list[Result]:
+    def results_for(
+        self, guild_id: int, puzzle_number: int, source_guild: int | None = None
+    ) -> list[Result]:
+        src = " AND source_guild_id = ?" if source_guild is not None else ""
+        params = (guild_id, puzzle_number) + ((source_guild,) if source_guild is not None else ())
         rows = self._conn.execute(
-            """
-            SELECT * FROM results WHERE guild_id = ? AND puzzle_number = ?
+            f"""
+            SELECT * FROM results WHERE guild_id = ? AND puzzle_number = ?{src}
             ORDER BY score DESC, submitted_at ASC
             """,
-            (guild_id, puzzle_number),
+            params,
         ).fetchall()
         return [self._result(r) for r in rows]
 
@@ -396,4 +436,5 @@ class Storage(GameStorageMixin):
             channel_id=row["channel_id"],
             message_id=row["message_id"],
             submitted_at=_from_iso(row["submitted_at"]),
+            source_guild_id=row["source_guild_id"],
         )

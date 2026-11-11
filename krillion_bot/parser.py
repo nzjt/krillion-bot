@@ -23,6 +23,16 @@ _HEADER_RE = re.compile(r"krillion\s*#\s*(\d{1,5})\b", re.IGNORECASE)
 _SCORE_RE = re.compile(r"(?<![\d#])(\d{1,4})(?!\d)")
 
 
+NOILLIRK_SCOPE = -1
+"""Scope id for the Noillirk game (Krillion is ``GLOBAL_GUILD_ID`` = 0);
+negative so it can never collide with a real or test guild id."""
+
+NOILLIRK_GAME = "Noillirk"
+SQUARE_SCORES = {"🟨": 100, "🟥": 64, "🟧": 32, "🟩": 16, "🟦": 8, "⬜": 4, "⬛": 0}
+SQUARE_EMOJI = frozenset(SQUARE_SCORES)
+NOILLIRK_HEADER_RE = re.compile(r"noillirk\s+daily\s*#\s*(\d{1,5})\b", re.IGNORECASE)
+
+
 @dataclass(frozen=True)
 class ParsedResult:
     puzzle_number: int
@@ -71,4 +81,35 @@ def parse_result(text: str) -> ParsedResult | None:
         ):
             return None
         return ParsedResult(puzzle_number=puzzle_number, score=score, tiers=tiers)
+    return None
+
+
+def _square_row(line: str) -> str:
+    chars = [c for c in line if c in SQUARE_EMOJI]
+    return "".join(chars) if chars else ""
+
+
+def parse_noillirk(text: str) -> ParsedResult | None:
+    """Return the parsed result or ``None`` if ``text`` is not a Noillirk share.
+
+    The printed metre figure is a transformed display value; the real score is
+    the sum of the seven square values (see ``SQUARE_SCORES``).
+    """
+    lines = [_strip_markdown(line) for line in text.splitlines()]
+    for idx, line in enumerate(lines):
+        m = NOILLIRK_HEADER_RE.search(line)
+        if not m:
+            continue
+        puzzle_number = int(m.group(1))
+        for follow in lines[idx + 1 : idx + 8]:
+            row = _square_row(follow)
+            if row:
+                if len(row) != ROUNDS_PER_DAY:
+                    return None
+                return ParsedResult(
+                    puzzle_number=puzzle_number,
+                    score=sum(SQUARE_SCORES[c] for c in row),
+                    tiers=row,
+                )
+        return None
     return None
