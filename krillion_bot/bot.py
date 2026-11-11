@@ -173,7 +173,11 @@ class KrillionBot(discord.Client):
             except Exception:
                 log.exception("Finalization failed")
             now = _now()
-            wake = min(self.service.next_finalize_at(now), now + _POLL_CAP)
+            wake = min(
+                self.service.next_finalize_at(now),
+                self.service.next_finalize_at(now, NOILLIRK_SCOPE),
+                now + _POLL_CAP,
+            )
             await asyncio.sleep(max(1.0, (wake - now).total_seconds() + 1))
 
     async def _announce(self, day: FinalizedDay) -> None:

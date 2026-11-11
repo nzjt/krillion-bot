@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -290,3 +290,31 @@ def test_manage_server_is_not_admin(kb):
     run(kb, "krillion admin unban", mod, member(2, "bob"))
     assert mod.sent[-1][2] is True
     assert kb.service.storage.is_banned(0, 2)
+
+
+@pytest.mark.parametrize(
+    ("game", "hour", "number"),
+    [("noillirk", 0, 46), ("krillion", 5, 119)],
+)
+def test_live_board_close_uses_current_puzzle_calendar(kb, monkeypatch, game, hour, number):
+    from importlib import import_module
+
+    now = datetime(2026, 11, 11, hour, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr("krillion_bot.bot._now", lambda: now)
+    text = f"Noillirk Daily #{number}\n🟨🟨🟨🟨🟨🟨🟨" if game == "noillirk" else share(number, 700)
+    outcome = post(kb, 1, "alice", text, now)
+    assert outcome.status.value == "accepted"
+    module = import_module(
+        "krillion_bot.commands_noillirk" if game == "noillirk" else "krillion_bot.commands"
+    )
+    captured = {}
+
+    def capture_table(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(module, "live_table", capture_table)
+    monkeypatch.setattr(module, "board_message", lambda *args: {"content": "board"})
+    interaction = Fake(1)
+    run(kb, f"{game} leaderboard", interaction)
+    close = datetime(2026, 11, 12, hour, 10, tzinfo=timezone.utc)
+    assert captured["reset_unix"] == int(close.timestamp())

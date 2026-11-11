@@ -103,7 +103,9 @@ def register(bot: KrillionBot) -> app_commands.Group:
             return
         players = {p.user_id: p for p in storage.players(guild_id, [r.user_id for r in results])}
         reset_unix = (
-            int(service.next_finalize_at(now).timestamp()) if n == calendar.current(now) else None
+            int((calendar.end(n) + service.grace).timestamp())
+            if n == calendar.current(now)
+            else None
         )
         outcome = service.rate_day(guild_id, n, results)
         board = live_table(

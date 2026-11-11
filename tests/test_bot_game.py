@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from test_bot import FakeMessage
@@ -57,3 +57,22 @@ def test_sunday_close_posts_weekly_recap(bot, monkeypatch):
 
     asyncio.run(close_day())
     assert len(channel.sent) == 1  # daily board only: no weekly channel configured
+
+
+def test_scheduler_wakes_for_noillirk_utc_close(bot, monkeypatch):
+    now = datetime(2026, 11, 11, 0, 5, tzinfo=timezone.utc)
+    monkeypatch.setattr("krillion_bot.bot._now", lambda: now)
+    states = iter([False, True])
+    monkeypatch.setattr(bot, "is_closed", lambda: next(states))
+    sleeps = []
+
+    async def ready():
+        pass
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(bot, "wait_until_ready", ready)
+    monkeypatch.setattr("krillion_bot.bot.asyncio.sleep", sleep)
+    asyncio.run(bot._finalize_loop())
+    assert sleeps == [301.0]

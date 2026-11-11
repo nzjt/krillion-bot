@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 from helpers import tiers_for
 
 from krillion_bot.formatting import DISPLAY_EMOJI, final_table, live_table, ratings_table
+from krillion_bot.parser import NOILLIRK_SCOPE
 from krillion_bot.puzzle import PuzzleCalendar
 from krillion_bot.rating import compute_round
 from krillion_bot.service import KrillionService, SubmitStatus
@@ -362,3 +363,63 @@ def test_formatting_notes(service):
         58, service.calendar.date_for(58), day.entries, day.players, {}, {7: -8.0, 8: 0.0}
     )
     assert decayed.notes[-1] == "_Δ includes +8 each from 1 inactive diver's rating decay._"
+
+
+@pytest.mark.parametrize(
+    ("reset", "number"),
+    [
+        (datetime(2026, 10, 31, tzinfo=timezone.utc), 35),
+        (datetime(2026, 11, 2, tzinfo=timezone.utc), 37),
+        (datetime(2026, 11, 11, tzinfo=timezone.utc), 46),
+    ],
+)
+def test_noillirk_resets_at_utc_midnight_across_us_dst(service, reset, number):
+    calendar = service.calendar_for(NOILLIRK_SCOPE)
+    before = reset - timedelta(microseconds=1)
+    assert calendar.current(before) == number - 1
+    assert calendar.current(reset) == number
+    assert calendar.start(number) == reset
+    assert calendar.end(number) == reset + timedelta(days=1)
+    assert service.calendar.current(before) == service.calendar.current(reset)
+
+
+def test_noillirk_accepts_puzzle_46_before_new_york_midnight(service):
+    now = datetime(2026, 11, 11, 2, 30, tzinfo=timezone.utc)
+    out = submit(service, 1, "alice", "Noillirk Daily #46\n🟨🟨🟨🟨🟨🟨🟨", now=now)
+    assert out.status is SubmitStatus.ACCEPTED
+    assert out.current_puzzle == 46
+    assert service.storage.get_result(NOILLIRK_SCOPE, 46, 1).score == 700
+    assert [p.user_id for p in service.ranked_players(NOILLIRK_SCOPE, now, False)] == [1]
+
+
+def test_noillirk_finalizes_after_utc_grace_period(service):
+    reset = datetime(2026, 11, 11, tzinfo=timezone.utc)
+    old = "Noillirk Daily #45\n🟨🟨🟨🟨🟨🟨🟨"
+    new = "Noillirk Daily #46\n🟨🟨🟨🟨🟨🟨🟨"
+    assert (
+        submit(service, 1, "alice", old, now=reset - timedelta(seconds=1)).status
+        is SubmitStatus.ACCEPTED
+    )
+    assert (
+        submit(service, 2, "bob", old, now=reset + timedelta(minutes=9)).status
+        is SubmitStatus.ACCEPTED
+    )
+    assert submit(service, 3, "carol", new, now=reset).status is SubmitStatus.ACCEPTED
+    assert service.finalize_due(reset + timedelta(minutes=9)) == []
+    closing = reset + timedelta(minutes=10)
+    assert submit(service, 4, "dave", old, now=closing).status is SubmitStatus.TOO_LATE
+    days = service.finalize_due(closing)
+    assert [(day.guild_id, day.puzzle_number) for day in days] == [(NOILLIRK_SCOPE, 45)]
+    assert not service.storage.is_finalized(NOILLIRK_SCOPE, 46)
+
+
+@pytest.mark.parametrize(
+    ("offset", "expected_offset"),
+    [(-1, 10), (5, 10), (10, 24 * 60 + 10)],
+)
+def test_noillirk_next_finalize_includes_current_grace_period(service, offset, expected_offset):
+    reset = datetime(2026, 11, 11, tzinfo=timezone.utc)
+    now = reset + timedelta(minutes=offset)
+    assert service.next_finalize_at(now, NOILLIRK_SCOPE) == reset + timedelta(
+        minutes=expected_offset
+    )

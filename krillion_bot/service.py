@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import Enum
+from zoneinfo import ZoneInfo
 
+from .models import GLOBAL_GUILD_ID
 from .parser import (
     NOILLIRK_HEADER_RE,
     NOILLIRK_SCOPE,
@@ -88,7 +90,9 @@ class KrillionService:
     ) -> None:
         self.storage = storage
         self.calendar = calendar or PuzzleCalendar()
-        self.noillirk_calendar = PuzzleCalendar(epoch=noillirk_epoch or date(2026, 9, 27))
+        self.noillirk_calendar = PuzzleCalendar(
+            tz=ZoneInfo("UTC"), epoch=noillirk_epoch or date(2026, 9, 27)
+        )
         self.grace = grace
         self.damping = damping
         self.decay_base = decay_base
@@ -196,7 +200,7 @@ class KrillionService:
     def ranked_players(self, guild_id: int, now: datetime, include_inactive: bool) -> list[Player]:
         """Public ratings board: by default nobody
         who has sat out the last :data:`MAX_INACTIVE_DAYS` puzzles."""
-        cutoff = self.calendar.current(now) - MAX_INACTIVE_DAYS
+        cutoff = self.calendar_for(guild_id).current(now) - MAX_INACTIVE_DAYS
         last = self.storage.last_played(guild_id)
         return [
             p
@@ -231,8 +235,13 @@ class KrillionService:
         """Rating change each submitter would get if ``results`` closed the day now."""
         return self.rate_day(guild_id, puzzle_number, results).deltas
 
-    def next_finalize_at(self, now: datetime) -> datetime:
-        return self.calendar.next_reset(now) + self.grace
+    def next_finalize_at(self, now: datetime, guild_id: int = GLOBAL_GUILD_ID) -> datetime:
+        """Next close for this game, including a grace period already in progress."""
+        calendar = self.calendar_for(guild_id)
+        closing = calendar.start(calendar.current(now)) + self.grace
+        if closing > now:
+            return closing
+        return calendar.next_reset(now) + self.grace
 
     def due_puzzles(self, now: datetime) -> list[tuple[int, int]]:
         return [
