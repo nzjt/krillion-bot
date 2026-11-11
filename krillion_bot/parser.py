@@ -30,7 +30,10 @@ negative so it can never collide with a real or test guild id."""
 NOILLIRK_GAME = "Noillirk"
 SQUARE_SCORES = {"🟨": 100, "🟥": 64, "🟧": 32, "🟩": 16, "🟦": 8, "⬜": 4, "⬛": 0}
 SQUARE_EMOJI = frozenset(SQUARE_SCORES)
-NOILLIRK_HEADER_RE = re.compile(r"noillirk\s+daily\s*#\s*(\d{1,5})\b", re.IGNORECASE)
+NOILLIRK_HEADER_RE = re.compile(
+    r"noillirk(?:\s+daily\s*#\s*|\s*:\s*the\s+daily\s+climb\s*\|\s*no\.\s*)(\d{1,5})\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,9 @@ def _square_row(line: str) -> str:
 
 def parse_noillirk(text: str) -> ParsedResult | None:
     """Return the parsed result or ``None`` if ``text`` is not a Noillirk share.
+
+    Accepts ``Noillirk: The Daily Climb | No. <n> - <height>`` and the legacy
+    ``Noillirk Daily #<n>`` header.
 
     The printed metre figure is a transformed display value; the real score is
     the sum of the seven square values (see ``SQUARE_SCORES``).

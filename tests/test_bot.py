@@ -1,14 +1,16 @@
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
 from helpers import tiers_for
 
 from krillion_bot.bot import KrillionBot, build
 from krillion_bot.config import Config
+from krillion_bot.parser import NOILLIRK_SCOPE
 from krillion_bot.puzzle import PuzzleCalendar
 from krillion_bot.service import KrillionService
 from krillion_bot.storage import Storage
@@ -139,3 +141,20 @@ def test_results_channel_filter(tmp_path):
     assert service.storage.get_result(0, 58, 1) is None
     asyncio.run(b.on_message(FakeMessage(f"Krillion #58\n340\n\n{tiers_for(340)}", channel_id=10)))
     assert service.storage.get_result(0, 58, 1).score == 340
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["Noillirk: The Daily Climb | No. 46 - 12,345m", "Noillirk Daily #46"],
+)
+def test_on_message_records_noillirk_share(bot, header):
+    msg = FakeMessage(
+        f"{header}\n\n🟨🟥🟧🟩🟦⬜⬛",
+        created_at=datetime(2026, 11, 11, 2, 30, tzinfo=timezone.utc),
+    )
+    asyncio.run(bot.on_message(msg))
+    assert msg.reactions == ["🚀"]
+    assert msg.replies == ["Received Noillirk #46 score from **alice**: 224 🚀"]
+    result = bot.service.storage.get_result(NOILLIRK_SCOPE, 46, 1)
+    assert result is not None and result.score == 224
+    assert result.source_guild_id == 1
