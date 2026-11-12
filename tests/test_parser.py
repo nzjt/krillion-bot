@@ -1,4 +1,5 @@
 import pytest
+from helpers import noillirk_share
 
 from krillion_bot.parser import parse_noillirk, parse_result
 
@@ -64,36 +65,41 @@ def test_rejects_non_results(text):
 
 
 @pytest.mark.parametrize(
-    "header",
+    "text",
     [
-        "Noillirk: The Daily Climb | No. 46 - 12,345m",
-        "Noillirk: The Daily Climb | No. 46 - [height]",
-        "noillirk: the daily climb | no. 46 - 99999 m",
-        "Noillirk Daily #46",
+        noillirk_share(46),
+        "Noillirk: The Daily Climb | No. 46 - 12,345m\n\n🟨🟥🟧🟩🟦⬜⬛\nhttps://playdaily.org/noillirk",
+        "https://playdaily.org/noillirk\n🟨🟥🟧🟩🟦⬜⬛\nwhatever title\nNo. 46\nNoillirk",
+        "**noillirk**\r\n**NO. 46**\r\n"
+        + "\r\n" * 10
+        + "🟨🟥🟧🟩🟦⬜⬛\r\nhttps://playdaily.org/noillirk",
     ],
 )
-def test_noillirk_share_headers(header):
-    squares = "🟨🟥🟧🟩🟦⬜⬛"
-    result = parse_noillirk(f"{header}\n\n{squares}")
-    assert result is not None
-    assert (result.puzzle_number, result.score, result.tiers) == (46, 224, squares)
-
-
-def test_noillirk_new_header_with_markdown_and_windows_newlines():
-    text = "**Noillirk: The Daily Climb | No. 46 - 12345m**\r\n\r\n🟨🟥🟧🟩🟦⬜⬛"
+def test_noillirk_accepts_required_content_in_any_layout(text):
     result = parse_noillirk(text)
     assert result is not None
-    assert (result.puzzle_number, result.score) == (46, 224)
+    assert (result.puzzle_number, result.score, result.tiers) == (46, 224, "🟨🟥🟧🟩🟦⬜⬛")
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "Noillirk: The Daily Climb | No. 46 - 12345m",
-        "Noillirk: The Daily Climb | No. 46 - 12345m\n\n🟨🟥🟧🟩🟦⬜",
-        "Noillirk: The Daily Climb | No. 46 - 12345m\n\n🟨🟥🟧🟩🟦⬜⬛⬛",
-        "Noillirk: The Daily Climb | No. - 46m\n\n🟨🟥🟧🟩🟦⬜⬛",
+        noillirk_share(46).replace("Noillirk\n", ""),
+        noillirk_share(46).replace("No. 46", ""),
+        noillirk_share(46).replace("https://playdaily.org/noillirk", ""),
+        noillirk_share(46).replace(
+            "https://playdaily.org/noillirk", "https://example.com/noillirk"
+        ),
+        noillirk_share(46).replace("No. 46", "#46"),
+        noillirk_share(46).replace("No. 46", "No. - 46m"),
+        noillirk_share(46, "🟨🟥🟧🟩🟦⬜"),
+        noillirk_share(46, "🟨🟥🟧🟩🟦⬜⬛⬛"),
     ],
 )
-def test_noillirk_new_header_rejects_incomplete_share(text):
+def test_noillirk_rejects_missing_required_content(text):
     assert parse_noillirk(text) is None
+
+
+@pytest.mark.parametrize("separator", [" ", "\n", "\t", "x", "**", "`", "\u200d"])
+def test_noillirk_rejects_separated_squares(separator):
+    assert parse_noillirk(noillirk_share(46, separator.join("🟨🟥🟧🟩🟦⬜⬛"))) is None

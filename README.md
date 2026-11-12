@@ -195,8 +195,14 @@ All settings live in `.env` (see `.env.example`):
 | `NOILLIRK_EPOCH_DATE` | `2026-09-27` | UTC date of Noillirk #1; resets at 00:00 UTC |
 
 Krillion resets in its configured timezone; Noillirk always resets at midnight UTC.
-The epoch dates mirror how each game numbers its puzzles. Both games accept the
-previous puzzle during `LATE_GRACE_MINUTES` before finalizing its leaderboard.
+The epoch dates mirror how each game numbers its puzzles. Krillion accepts the
+previous puzzle during `LATE_GRACE_MINUTES`; Noillirk accepts only the current UTC
+puzzle. Both games finalize leaderboards after that configured delay.
+
+Noillirk shares can use any layout. They must contain the name `Noillirk`,
+`No. <current puzzle number>`, an unbroken sequence of exactly seven colored
+squares, and `https://playdaily.org/noillirk`. The displayed height is ignored;
+the seven square values determine the score.
 
 ## Layout
 

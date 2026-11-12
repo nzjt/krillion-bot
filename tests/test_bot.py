@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
-from helpers import tiers_for
+from helpers import noillirk_share, tiers_for
 
 from krillion_bot.bot import KrillionBot, build
 from krillion_bot.config import Config
@@ -145,11 +145,11 @@ def test_results_channel_filter(tmp_path):
 
 @pytest.mark.parametrize(
     "header",
-    ["Noillirk: The Daily Climb | No. 46 - 12,345m", "Noillirk Daily #46"],
+    ["Noillirk: The Daily Climb | No. 46 - 12,345m", "Noillirk — another layout — No. 46"],
 )
 def test_on_message_records_noillirk_share(bot, header):
     msg = FakeMessage(
-        f"{header}\n\n🟨🟥🟧🟩🟦⬜⬛",
+        f"{header}\n\n🟨🟥🟧🟩🟦⬜⬛\nhttps://playdaily.org/noillirk",
         created_at=datetime(2026, 11, 11, 2, 30, tzinfo=timezone.utc),
     )
     asyncio.run(bot.on_message(msg))
@@ -158,3 +158,17 @@ def test_on_message_records_noillirk_share(bot, header):
     result = bot.service.storage.get_result(NOILLIRK_SCOPE, 46, 1)
     assert result is not None and result.score == 224
     assert result.source_guild_id == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        noillirk_share(46).replace("https://playdaily.org/noillirk", ""),
+        noillirk_share(46, "🟨 🟥 🟧 🟩 🟦 ⬜ ⬛"),
+    ],
+)
+def test_on_message_ignores_invalid_noillirk_share(bot, text):
+    msg = FakeMessage(text, created_at=datetime(2026, 11, 11, 2, 30, tzinfo=timezone.utc))
+    asyncio.run(bot.on_message(msg))
+    assert msg.reactions == [] and msg.replies == []
+    assert bot.service.storage.get_result(NOILLIRK_SCOPE, 46, 1) is None

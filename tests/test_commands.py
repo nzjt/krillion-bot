@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 import pytest
-from helpers import tiers_for
+from helpers import noillirk_share, tiers_for
 from test_bot import run_command as run
 
 from krillion_bot.bot import KrillionBot
@@ -301,7 +301,7 @@ def test_live_board_close_uses_current_puzzle_calendar(kb, monkeypatch, game, ho
 
     now = datetime(2026, 11, 11, hour, 5, tzinfo=timezone.utc)
     monkeypatch.setattr("krillion_bot.bot._now", lambda: now)
-    text = f"Noillirk Daily #{number}\n🟨🟨🟨🟨🟨🟨🟨" if game == "noillirk" else share(number, 700)
+    text = noillirk_share(number, "🟨🟨🟨🟨🟨🟨🟨") if game == "noillirk" else share(number, 700)
     outcome = post(kb, 1, "alice", text, now)
     assert outcome.status.value == "accepted"
     module = import_module(

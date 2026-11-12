@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
-from helpers import tiers_for
+from helpers import noillirk_share, tiers_for
 
 from krillion_bot.formatting import DISPLAY_EMOJI, final_table, live_table, ratings_table
 from krillion_bot.parser import NOILLIRK_SCOPE
@@ -385,24 +385,24 @@ def test_noillirk_resets_at_utc_midnight_across_us_dst(service, reset, number):
 
 def test_noillirk_accepts_puzzle_46_before_new_york_midnight(service):
     now = datetime(2026, 11, 11, 2, 30, tzinfo=timezone.utc)
-    out = submit(service, 1, "alice", "Noillirk Daily #46\n🟨🟨🟨🟨🟨🟨🟨", now=now)
+    out = submit(service, 1, "alice", noillirk_share(46, "🟨🟨🟨🟨🟨🟨🟨"), now=now)
     assert out.status is SubmitStatus.ACCEPTED
     assert out.current_puzzle == 46
     assert service.storage.get_result(NOILLIRK_SCOPE, 46, 1).score == 700
     assert [p.user_id for p in service.ranked_players(NOILLIRK_SCOPE, now, False)] == [1]
 
 
-def test_noillirk_finalizes_after_utc_grace_period(service):
+def test_noillirk_requires_current_puzzle_while_finalization_waits_for_grace(service):
     reset = datetime(2026, 11, 11, tzinfo=timezone.utc)
-    old = "Noillirk Daily #45\n🟨🟨🟨🟨🟨🟨🟨"
-    new = "Noillirk Daily #46\n🟨🟨🟨🟨🟨🟨🟨"
+    old = noillirk_share(45, "🟨🟨🟨🟨🟨🟨🟨")
+    new = noillirk_share(46, "🟨🟨🟨🟨🟨🟨🟨")
     assert (
         submit(service, 1, "alice", old, now=reset - timedelta(seconds=1)).status
         is SubmitStatus.ACCEPTED
     )
     assert (
         submit(service, 2, "bob", old, now=reset + timedelta(minutes=9)).status
-        is SubmitStatus.ACCEPTED
+        is SubmitStatus.TOO_LATE
     )
     assert submit(service, 3, "carol", new, now=reset).status is SubmitStatus.ACCEPTED
     assert service.finalize_due(reset + timedelta(minutes=9)) == []
@@ -422,4 +422,18 @@ def test_noillirk_next_finalize_includes_current_grace_period(service, offset, e
     now = reset + timedelta(minutes=offset)
     assert service.next_finalize_at(now, NOILLIRK_SCOPE) == reset + timedelta(
         minutes=expected_offset
+    )
+
+
+@pytest.mark.parametrize(
+    ("number", "status"),
+    [(45, SubmitStatus.TOO_LATE), (46, SubmitStatus.ACCEPTED), (47, SubmitStatus.NOT_YET)],
+)
+def test_noillirk_requires_current_utc_puzzle_number(service, number, status):
+    now = datetime(2026, 11, 11, 0, 5, tzinfo=timezone.utc)
+    outcome = submit(service, 1, "alice", noillirk_share(number), now=now)
+    assert outcome.status is status
+    assert outcome.current_puzzle == 46
+    assert (service.storage.get_result(NOILLIRK_SCOPE, number, 1) is not None) == (
+        status is SubmitStatus.ACCEPTED
     )

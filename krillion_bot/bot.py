@@ -13,7 +13,7 @@ from .config import Config
 from .discord_util import board_message, guild_members, png_file, utcnow
 from .formatting import final_table
 from .models import GLOBAL_GUILD_ID
-from .parser import NOILLIRK_HEADER_RE, NOILLIRK_SCOPE
+from .parser import NOILLIRK_NAME_RE, NOILLIRK_SCOPE
 from .plot_week import week_plot
 from .puzzle import PuzzleCalendar
 from .service import FinalizedDay, KrillionService, SubmitStatus
@@ -96,7 +96,7 @@ class KrillionBot(discord.Client):
         wanted = self.config.results_channel_id
         if wanted is not None and message.channel.id != wanted:
             return
-        scope = NOILLIRK_SCOPE if NOILLIRK_HEADER_RE.search(message.content) else GLOBAL_GUILD_ID
+        scope = NOILLIRK_SCOPE if NOILLIRK_NAME_RE.search(message.content) else GLOBAL_GUILD_ID
         game = "Noillirk" if scope == NOILLIRK_SCOPE else "Krillion"
         emo = "🚀" if scope == NOILLIRK_SCOPE else "🦐"
         outcome = self.service.submit(

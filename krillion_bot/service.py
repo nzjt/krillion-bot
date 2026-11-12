@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .models import GLOBAL_GUILD_ID
 from .parser import (
-    NOILLIRK_HEADER_RE,
+    NOILLIRK_NAME_RE,
     NOILLIRK_SCOPE,
     ParsedResult,
     parse_noillirk,
@@ -136,7 +136,7 @@ class KrillionService:
         now: datetime,
         source_guild_id: int = 0,
     ) -> SubmitOutcome:
-        noillirk = NOILLIRK_HEADER_RE.search(text) is not None
+        noillirk = NOILLIRK_NAME_RE.search(text) is not None
         scope = NOILLIRK_SCOPE if noillirk else guild_id
         cal = self.calendar_for(scope)
         current = cal.current(now)
@@ -172,6 +172,8 @@ class KrillionService:
             return SubmitOutcome(SubmitStatus.BANNED, parsed, current)
         if n > current:
             return SubmitOutcome(SubmitStatus.NOT_YET, parsed, current)
+        if guild_id == NOILLIRK_SCOPE and n < current:
+            return SubmitOutcome(SubmitStatus.TOO_LATE, parsed, current)
         if not self.is_open(guild_id, n, now) or self.storage.is_finalized(guild_id, n):
             return SubmitOutcome(SubmitStatus.TOO_LATE, parsed, current)
         self.storage.upsert_player(guild_id, user_id, display_name)
