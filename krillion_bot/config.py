@@ -55,6 +55,8 @@ class Config:
     epoch_date: date
     log_level: str
     admin_user_ids: frozenset[int] = DEFAULT_ADMIN_USER_IDS
+    noillirk_epoch_date: date = date(2026, 9, 27)
+    noillirk_tz: ZoneInfo = ZoneInfo("UTC")
 
     @classmethod
     def from_env(cls) -> Config:
@@ -73,6 +75,10 @@ class Config:
             decay_grace=int(os.environ.get("RATING_DECAY_GRACE", "0")),
             puzzle_tz=ZoneInfo(os.environ.get("KRILLION_TIMEZONE", "America/New_York")),
             epoch_date=date.fromisoformat(os.environ.get("KRILLION_EPOCH_DATE", "2026-07-16")),
+            noillirk_epoch_date=date.fromisoformat(
+                os.environ.get("NOILLIRK_EPOCH_DATE", "2026-09-27")
+            ),
+            noillirk_tz=ZoneInfo(os.environ.get("NOILLIRK_TIMEZONE", "UTC")),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
             admin_user_ids=_id_set(os.environ.get("ADMIN_USER_IDS")),
         )

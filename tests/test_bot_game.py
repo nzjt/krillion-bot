@@ -11,12 +11,21 @@ DURING_60 = datetime(2026, 9, 14, 9, 30, tzinfo=AEST)
 AFTER_60 = datetime(2026, 9, 14, 14, 30, tzinfo=AEST)
 
 
+class FakeGuild:
+    def __init__(self, gid: int = 1):
+        self.id = gid
+        self.members: list = []
+        self.system_channel = None
+        self.text_channels: list = []
+
+
 class FakeChannel:
-    def __init__(self, cid: int, messages=()):
+    def __init__(self, cid: int, messages=(), guild=None):
         self.id = cid
         self.mention = f"<#{cid}>"
         self.sent: list = []
         self.messages = list(messages)
+        self.guild = guild
 
     async def send(self, content=None, **kwargs):
         self.sent.append((content, kwargs))
@@ -37,23 +46,26 @@ def wire(bot, monkeypatch, channel: FakeChannel):
 
 
 def test_banned_message_gets_reaction(bot):
-    bot.service.storage.ban(1, 1, banned_by=ADMIN, reason=None, at=FakeMessage("x").created_at)
+    bot.service.storage.ban(0, 1, banned_by=ADMIN, reason=None, at=FakeMessage("x").created_at)
     msg = FakeMessage(share(58, 340))
     asyncio.run(bot.on_message(msg))
     assert msg.reactions == ["🚫"] and msg.replies == []
-    assert bot.service.storage.get_result(1, 58, 1) is None
+    assert bot.service.storage.get_result(0, 58, 1) is None
 
 
 def test_sunday_close_posts_weekly_recap(bot, monkeypatch):
     monkeypatch.setattr("krillion_bot.bot._now", lambda: AFTER_60)
-    channel = FakeChannel(10)
+    guild = FakeGuild()
+    channel = FakeChannel(10, guild=guild)
     wire(bot, monkeypatch, channel)
     post(bot, 1, "alice", share(60, 700), DURING_60)
     post(bot, 2, "bob", share(60, 200), DURING_60)
 
     async def close_day():
-        for day in bot.service.finalize_due(AFTER_60):
-            await bot._announce(day)
+        for game_scope, n in bot.service.due_result_puzzles(AFTER_60):
+            day = bot.service.finalize_guild_day(game_scope, guild.id, n, None, AFTER_60)
+            if day is not None:
+                await bot._announce(guild, day)
 
     asyncio.run(close_day())
     assert len(channel.sent) == 1  # daily board only: no weekly channel configured

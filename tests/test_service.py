@@ -88,7 +88,17 @@ def test_grace_period_after_reset(service):
 def test_nothing_due_while_day_open(service):
     submit(service, 1, "alice", share(58, 340))
     assert service.finalize_due(RESET_59 + timedelta(minutes=9)) == []
-    assert service.next_finalize_at(DURING_58) == RESET_59 + timedelta(minutes=10)
+    # Inside #58's grace window the day has rolled to #59, but the pending
+    # close must still be the next wake, not tomorrow's reset.
+    assert service.next_finalize_at(RESET_59 + timedelta(minutes=5)) == (
+        RESET_59 + timedelta(minutes=10)
+    )
+    noillirk_close = service.noillirk_calendar.end(
+        service.noillirk_calendar.current(DURING_58)
+    )
+    assert service.next_finalize_at(DURING_58) == min(
+        RESET_59 + timedelta(minutes=10), noillirk_close + service.grace
+    )
 
 
 def test_finalize_applies_rating_and_posts_once(service):
@@ -100,7 +110,7 @@ def test_finalize_applies_rating_and_posts_once(service):
     days = service.finalize_due(close)
     assert len(days) == 1
     day = days[0]
-    assert (day.guild_id, day.puzzle_number, day.channel_id) == (GUILD, 58, CHANNEL)
+    assert (day.guild_id, day.puzzle_number, day.channel_ids) == (GUILD, 58, (CHANNEL,))
     by_user = {e.user_id: e for e in day.entries}
     assert by_user[1].placement == 1
     assert by_user[2].placement == 2 and by_user[3].placement == 2

@@ -116,6 +116,7 @@ def final_table(
     players: Mapping[int, Player],
     tiers: Mapping[int, str] | None = None,
     decay: Mapping[int, float] | None = None,
+    game: str = "Krillion",
 ) -> Table:
     rows = []
     for e in entries:
@@ -131,7 +132,7 @@ def final_table(
         note = _decay_note(decay, len(entries))
         if note:
             notes.append(note)
-    title = f"Krillion #{puzzle_number} {puzzle_date.isoformat()} Results"
+    title = f"{game} #{puzzle_number} {puzzle_date.isoformat()} Results"
     return Table(title, RESULT_HEADER, rows, RESULT_RIGHT, notes)
 
 
@@ -143,6 +144,7 @@ def live_table(
     deltas: Mapping[int, float] | None = None,
     performances: Mapping[int, float | None] | None = None,
     reset_unix: int | None = None,
+    game: str = "Krillion",
 ) -> Table:
     """``deltas``/``performances``: projected values if the day closed with these results."""
     rows = []
@@ -164,7 +166,7 @@ def live_table(
         notes.append("_Only one diver so far, so no rating change yet._")
     if reset_unix is not None:
         notes.append(f"_Projected rating changes; closes <t:{reset_unix}:R>._")
-    return Table(f"Krillion #{puzzle_number} — live", RESULT_HEADER, rows, RESULT_RIGHT, notes)
+    return Table(f"{game} #{puzzle_number} — live", RESULT_HEADER, rows, RESULT_RIGHT, notes)
 
 
 def ratings_table(players: list[Player], games: Mapping[int, int]) -> Table | None:

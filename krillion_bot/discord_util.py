@@ -11,13 +11,14 @@ import asyncio
 import io
 import logging
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, timezone
 from typing import Any, ParamSpec
 
 import discord
 
 from .formatting import Table
+from .models import GLOBAL_GUILD_ID
 from .puzzle import PuzzleCalendar
 from .rating import rank_for_rating
 from .render import render_table
@@ -36,9 +37,38 @@ def utcnow() -> datetime:
 
 
 def guild_of(interaction: discord.Interaction) -> int:
-    """The server id; every ``/krillion`` command is ``guild_only``."""
+    """The real server id; results/ratings are global but boards filter to it."""
     assert interaction.guild_id is not None
     return interaction.guild_id
+
+
+async def guild_members(
+    guild: discord.Guild | None, user_ids: Iterable[int]
+) -> set[int] | None:
+    """Subset of ``user_ids`` who are members of ``guild``; ``None`` when the
+    member list cannot be checked (missing intent or test fakes)."""
+    if guild is None or not hasattr(guild, "fetch_member"):
+        return None
+    # Cache hits are free; only uncached users need a REST round-trip each.
+    if hasattr(guild, "get_member"):
+        out = {uid for uid in user_ids if guild.get_member(uid) is not None}
+        missing = [uid for uid in user_ids if uid not in out]
+    else:
+        out, missing = set(), list(user_ids)
+    results = await asyncio.gather(
+        *(guild.fetch_member(uid) for uid in missing), return_exceptions=True
+    )
+    out |= {uid for uid, r in zip(missing, results) if not isinstance(r, Exception)}
+    return out
+
+
+async def member_gate(interaction: discord.Interaction, *users) -> bool:
+    """False (after replying) if a resolvable member check excludes a user."""
+    mem = await guild_members(getattr(interaction, "guild", None), {u.id for u in users})
+    if mem is not None and {u.id for u in users} - mem:
+        await reply(interaction, alert("That user is not in this server."), ephemeral=True)
+        return False
+    return True
 
 
 def png_file(png: bytes, filename: str) -> discord.File:
@@ -110,7 +140,10 @@ def alert(description: str) -> discord.Embed:
 async def reply(
     interaction: discord.Interaction, embed: discord.Embed, *, ephemeral: bool = False
 ) -> None:
-    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
 async def send_plot(
@@ -188,8 +221,9 @@ async def send_pages(
     ephemeral: bool = False,
 ) -> None:
     index = min(max(1, page), len(embeds)) - 1
-    if len(embeds) == 1:
-        await interaction.response.send_message(embed=embeds[0], ephemeral=ephemeral)
-        return
-    view = Pages(embeds, interaction.user.id, index)
-    await interaction.response.send_message(embed=embeds[index], view=view, ephemeral=ephemeral)
+    view = Pages(embeds, interaction.user.id, index) if len(embeds) > 1 else None
+    embed = embeds[index] if view else embeds[0]
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=ephemeral)

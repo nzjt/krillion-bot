@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+GLOBAL_GUILD_ID = 0
+"""Single shared scope: results posted in any server feed one global leaderboard."""
+
 
 @dataclass(frozen=True)
 class Result:
@@ -16,6 +19,8 @@ class Result:
     channel_id: int
     message_id: int | None
     submitted_at: datetime
+    source_guild_id: int = 0
+    """Real Discord server the share was posted in; boards are filtered by it."""
 
 
 @dataclass(frozen=True)

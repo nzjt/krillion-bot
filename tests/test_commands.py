@@ -29,7 +29,9 @@ class Fake:
         self.user = SimpleNamespace(
             id=self.user_id, mention=f"<@{self.user_id}>", display_name=self.name
         )
-        self.response = SimpleNamespace(send_message=self._send, defer=self._defer)
+        self.response = SimpleNamespace(
+            send_message=self._send, defer=self._defer, is_done=self._is_done
+        )
         self.followup = SimpleNamespace(send=self._send)
 
     async def _send(self, content=None, **kwargs):
@@ -39,6 +41,9 @@ class Fake:
 
     async def _defer(self, **_):
         self.deferred = True
+
+    def _is_done(self):
+        return self.deferred
 
     @property
     def text(self) -> str:
@@ -67,7 +72,8 @@ def share(n: int, score: int, tiers: str | None = None) -> str:
 
 def post(bot, uid, name, text, when=NOW):
     return bot.service.submit(
-        guild_id=1,
+        guild_id=0,
+        source_guild_id=1,
         user_id=uid,
         display_name=name,
         text=text,
@@ -75,6 +81,18 @@ def post(bot, uid, name, text, when=NOW):
         message_id=None,
         now=when,
     )
+
+
+def close_due(bot, now=NOW, guild_id=1):
+    """Close every due game-scope day for the fake guild (membership=None)."""
+    return [
+        day
+        for game_scope, n in bot.service.due_result_puzzles(now)
+        if (
+            day := bot.service.finalize_guild_day(game_scope, guild_id, n, None, now)
+        )
+        is not None
+    ]
 
 
 @pytest.fixture
@@ -88,7 +106,7 @@ def seeded(kb) -> KrillionBot:
     day_ago = NOW - timedelta(days=1)
     post(kb, 1, "alice", share(57, 700, "🌟🌟🌟🌟🌟🌟🌟"), day_ago)
     post(kb, 2, "bob", share(57, 300), day_ago)
-    kb.service.finalize_due(NOW)
+    close_due(kb)
     post(kb, 1, "alice", share(58, 340))
     post(kb, 2, "bob", share(58, 500))
     return kb
@@ -126,7 +144,7 @@ def test_stats_and_streak(seeded):
 def test_skips_and_history(seeded):
     post(seeded, 3, "carol", share(58, 100))
     seeded.service.add_manual(
-        guild_id=1,
+        guild_id=0,
         user_id=3,
         display_name="carol",
         puzzle_number=55,
@@ -157,7 +175,7 @@ def test_rating_and_performance(seeded):
     assert i.embed.description == "No Krillion rating for `nobody` yet."
     post(seeded, 1, "alice", share(56, 100), NOW - timedelta(days=2))
     post(seeded, 2, "bob", share(56, 600), NOW - timedelta(days=2))
-    seeded.service.replay(1, NOW)
+    seeded.service.replay_guild(0, 1, None, NOW)
     i = Fake(1)
     run(seeded, "krillion performance", i)
     assert i.files and i.files[0].filename == "krillion-rating.png"
@@ -219,7 +237,7 @@ def test_leaderboard_ratings_puzzle(seeded):
 def test_admin_ban(kb):
     a = Fake(ADMIN, name="admin")
     run(kb, "krillion admin ban", a, member(2, "bob"), "cheating")
-    assert "bob` from Krillion tracking." in a.embed.description
+    assert "bob` from Krillion tracking in this server." in a.embed.description
     assert "Reason: cheating" in a.embed.description
     assert "Removed their Krillion" not in a.embed.description
     assert post(kb, 2, "bob", share(58, 700)).status.value == "banned"
@@ -228,12 +246,12 @@ def test_admin_ban(kb):
     assert "already banned" in a.embed.description
 
 
-def test_admin_ban_removes_current_result(kb):
+def test_admin_ban_keeps_global_result(kb):
+    """A ban is per-server: the shared result stays, it just stops rating here."""
     assert post(kb, 2, "bob", share(58, 340)).status.value == "accepted"
     a = Fake(ADMIN, name="admin")
     run(kb, "krillion admin ban", a, member(2, "bob"))
-    assert "Removed their Krillion #58 result (340 pts)." in a.embed.description
-    assert kb.service.storage.results_for(1, 58) == []
+    assert [r.user_id for r in kb.service.storage.results_for(0, 58)] == [2]
 
 
 def test_admin_invalidate(kb):
@@ -244,7 +262,7 @@ def test_admin_invalidate(kb):
         "Removed `bob`'s Krillion #58 result (340 pts).\n"
         "Reason: correction They can post a corrected result."
     )
-    assert kb.service.storage.results_for(1, 58) == []
+    assert kb.service.storage.results_for(0, 58) == []
     refused = Fake(2, name="mallory")
     run(kb, "krillion admin invalidate", refused, member(2, "bob"))
     assert refused.sent[-1][2] is True

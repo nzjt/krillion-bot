@@ -5,11 +5,20 @@ from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import Player, PlayerStats, RatingEntry, Result
+from .models import GLOBAL_GUILD_ID, Player, PlayerStats, RatingEntry, Result
+from .parser import NOILLIRK_SCOPE
 from .rating import STARTING_RATING
 from .storage_game import GameStorageMixin
 
-__all__ = ["Player", "PlayerStats", "RatingEntry", "Result", "Storage", "RATING_ENGINE"]
+__all__ = [
+    "GLOBAL_GUILD_ID",
+    "Player",
+    "PlayerStats",
+    "RatingEntry",
+    "Result",
+    "Storage",
+    "RATING_ENGINE",
+]
 
 RATING_ENGINE = "cf-queens-1"
 """Bumped whenever the rating maths changes; a mismatch triggers a full replay."""
@@ -30,6 +39,7 @@ CREATE TABLE IF NOT EXISTS results (
     score         INTEGER NOT NULL,
     tiers         TEXT    NOT NULL DEFAULT '',
     channel_id    INTEGER NOT NULL,
+    source_guild_id INTEGER NOT NULL DEFAULT 0,
     message_id    INTEGER,
     submitted_at  TEXT    NOT NULL,
     PRIMARY KEY (guild_id, puzzle_number, user_id)
@@ -103,6 +113,21 @@ class Storage(GameStorageMixin):
         }
         if "performance" not in columns:
             self._conn.execute("ALTER TABLE rating_history ADD COLUMN performance REAL")
+        rcols = {r["name"] for r in self._conn.execute("PRAGMA table_info(results)").fetchall()}
+        if "source_guild_id" not in rcols:
+            self._conn.execute(
+                "ALTER TABLE results ADD COLUMN source_guild_id INTEGER NOT NULL DEFAULT 0"
+            )
+        # Results are the only globally-scoped table: fold any rows written
+        # under a real guild (pre-merge) into its game scope. Positive ids are
+        # Krillion, negative are Noillirk — never fold one game into the other.
+        # Rating data (players/rating_history/finalized_days/bans) legitimately
+        # lives under per-server scopes and is left alone.
+        for scope, cond in ((GLOBAL_GUILD_ID, "guild_id > 0"), (NOILLIRK_SCOPE, "guild_id < -1")):
+            self._conn.execute(
+                f"UPDATE OR IGNORE results SET guild_id = ? WHERE {cond}", (scope,)
+            )
+            self._conn.execute(f"DELETE FROM results WHERE {cond}")
 
     def close(self) -> None:
         self._conn.close()
@@ -177,8 +202,8 @@ class Storage(GameStorageMixin):
             """
             INSERT OR IGNORE INTO results
                 (guild_id, puzzle_number, user_id, score, tiers, channel_id, message_id,
-                 submitted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, source_guild_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.guild_id,
@@ -189,6 +214,7 @@ class Storage(GameStorageMixin):
                 result.channel_id,
                 result.message_id,
                 _iso(result.submitted_at),
+                result.source_guild_id,
             ),
         )
         return cur.rowcount == 1
@@ -210,29 +236,52 @@ class Storage(GameStorageMixin):
             )
         return existing
 
-    def results_for(self, guild_id: int, puzzle_number: int) -> list[Result]:
+    def results_for(
+        self, guild_id: int, puzzle_number: int, source_guild: int | None = None
+    ) -> list[Result]:
+        src = " AND source_guild_id = ?" if source_guild is not None else ""
+        params = (guild_id, puzzle_number) + ((source_guild,) if source_guild is not None else ())
         rows = self._conn.execute(
-            """
-            SELECT * FROM results WHERE guild_id = ? AND puzzle_number = ?
+            f"""
+            SELECT * FROM results WHERE guild_id = ? AND puzzle_number = ?{src}
             ORDER BY score DESC, submitted_at ASC
             """,
-            (guild_id, puzzle_number),
+            params,
         ).fetchall()
         return [self._result(r) for r in rows]
 
-    def unfinalized_puzzles(self) -> list[tuple[int, int]]:
-        """``(guild_id, puzzle_number)`` pairs that have results but no finalization."""
+    def result_user_ids(self) -> set[int]:
+        """Every user with a stored result, across all scopes."""
+        rows = self._conn.execute("SELECT DISTINCT user_id FROM results").fetchall()
+        return {r["user_id"] for r in rows}
+
+    def result_puzzles(self) -> list[tuple[int, int]]:
+        """``(game scope, puzzle_number)`` pairs that have any stored results."""
         rows = self._conn.execute(
-            """
-            SELECT DISTINCT r.guild_id, r.puzzle_number
-            FROM results r
-            LEFT JOIN finalized_days f
-                   ON f.guild_id = r.guild_id AND f.puzzle_number = r.puzzle_number
-            WHERE f.puzzle_number IS NULL
-            ORDER BY r.guild_id, r.puzzle_number
-            """
+            "SELECT DISTINCT guild_id, puzzle_number FROM results "
+            "ORDER BY guild_id, puzzle_number"
         ).fetchall()
         return [(r["guild_id"], r["puzzle_number"]) for r in rows]
+
+    def legacy_rating_rows(self) -> bool:
+        """Rating data still filed under a game scope (pre per-server model)."""
+        row = self._conn.execute(
+            "SELECT 1 FROM finalized_days WHERE guild_id IN (?, ?) LIMIT 1",
+            (GLOBAL_GUILD_ID, NOILLIRK_SCOPE),
+        ).fetchone()
+        return row is not None
+
+    def clear_scope_ratings(self, guild_id: int) -> None:
+        """Drop a scope's rating history and finalizations (players stay, as the
+        global display-name registry)."""
+        with self._conn:
+            self._conn.execute("BEGIN")
+            self._conn.execute(
+                "DELETE FROM rating_history WHERE guild_id = ?", (guild_id,)
+            )
+            self._conn.execute(
+                "DELETE FROM finalized_days WHERE guild_id = ?", (guild_id,)
+            )
 
     def is_finalized(self, guild_id: int, puzzle_number: int) -> bool:
         row = self._conn.execute(
@@ -396,4 +445,5 @@ class Storage(GameStorageMixin):
             channel_id=row["channel_id"],
             message_id=row["message_id"],
             submitted_at=_from_iso(row["submitted_at"]),
+            source_guild_id=row["source_guild_id"],
         )

@@ -43,10 +43,17 @@ class GameStorageMixin:
         return [self._result(r) for r in rows]
 
     def results_between(
-        self, guild_id: int, low: int | None = None, high: int | None = None
+        self,
+        guild_id: int,
+        low: int | None = None,
+        high: int | None = None,
+        source_guild: int | None = None,
     ) -> list[Result]:
-        """Every result in the guild with puzzle number in ``[low, high]``, oldest first."""
+        """Every result in the scope with puzzle number in ``[low, high]``, oldest first."""
         where, params = self._range("puzzle_number", low, high)
+        if source_guild is not None:
+            where += " AND source_guild_id = ?"
+            params += (source_guild,)
         rows = self._conn.execute(
             f"SELECT * FROM results WHERE guild_id = ?{where} "
             "ORDER BY puzzle_number, score DESC, submitted_at",

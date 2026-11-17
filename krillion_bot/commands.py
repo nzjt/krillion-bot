@@ -17,8 +17,10 @@ from .charts import rating_chart
 from .discord_util import (
     alert,
     board_message,
+    guild_members,
     guild_of,
     info,
+    member_gate,
     png_file,
     reply,
     resolve_puzzle,
@@ -27,6 +29,8 @@ from .discord_util import (
 )
 from .formatting import final_table, live_table, ratings_table
 from .plot_stats import stats_plot
+from .models import GLOBAL_GUILD_ID, Player
+from .rating import STARTING_RATING
 from .service import MAX_INACTIVE_DAYS
 from .views import (
     TIMEFRAME_LABEL,
@@ -61,8 +65,32 @@ def register(bot: KrillionBot) -> app_commands.Group:
         guild_only=True,
     )
 
-    def names_for(guild_id: int) -> dict[int, str]:
-        return {p.user_id: p.display_name for p in storage.players(guild_id)}
+    def names_for(rscope: int) -> dict[int, str]:
+        """Display names: the guild's own players, falling back to the global
+        registry for members not yet rated in this server."""
+        names = {
+            p.user_id: p.display_name
+            for p in storage.players(GLOBAL_GUILD_ID)
+        }
+        names.update({p.user_id: p.display_name for p in storage.players(rscope)})
+        return names
+
+    def players_view(rscope: int, uids) -> dict[int, Player]:
+        """The guild's rated players plus 1200-placeholders for members who
+        haven't finished a rated day in this server yet."""
+        out = {p.user_id: p for p in storage.players(rscope, uids)}
+        names = {
+            p.user_id: p.display_name for p in storage.players(GLOBAL_GUILD_ID, uids)
+        }
+        for uid in uids:
+            if uid not in out:
+                out[uid] = Player(
+                    guild_id=rscope,
+                    user_id=uid,
+                    display_name=names.get(uid, f"<@{uid}>"),
+                    rating=STARTING_RATING,
+                )
+        return out
 
     def today() -> date:
         return calendar.date_for(calendar.current(bot.now()))
@@ -74,30 +102,42 @@ def register(bot: KrillionBot) -> app_commands.Group:
     async def leaderboard(
         interaction: discord.Interaction, puzzle: int | None = None, date: str | None = None
     ) -> None:
-        guild_id = guild_of(interaction)
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
         now = bot.now()
         n, error = resolve_puzzle(calendar, now, puzzle, date)
         if n is None:
             await reply(interaction, alert(error or "Bad puzzle."), ephemeral=True)
             return
-        if storage.is_finalized(guild_id, n):
-            entries = storage.history_for(guild_id, n)
-            players = {
-                p.user_id: p for p in storage.players(guild_id, [e.user_id for e in entries])
-            }
-            tiers = {r.user_id: r.tiers for r in storage.results_for(guild_id, n)}
+        await interaction.response.defer()
+        all_res = storage.results_for(GLOBAL_GUILD_ID, n)
+        mem = await guild_members(getattr(interaction, "guild", None), {r.user_id for r in all_res})
+        gres = [
+            r
+            for r in all_res
+            if (mem is None or r.user_id in mem)
+            and not storage.is_banned(rscope, r.user_id)
+        ]
+        if storage.is_finalized(rscope, n):
+            uids = {r.user_id for r in gres}
+            entries = service.local_placements(
+                [e for e in storage.history_for(rscope, n) if e.user_id in uids]
+            )
+            players = players_view(rscope, [e.user_id for e in entries])
+            tiers = {r.user_id: r.tiers for r in gres}
             board = final_table(n, calendar.date_for(n), entries, players, tiers)
-            await interaction.response.send_message(**board_message(board, f"krillion-{n}.png"))
+            await interaction.followup.send(**board_message(board, f"krillion-{n}.png"))
             return
-        results = storage.results_for(guild_id, n)
+        results = gres
         if not results:
-            await reply(interaction, info(f"No results for Krillion #{n} yet."))
+            await interaction.followup.send(embed=info(f"No results for Krillion #{n} yet."))
             return
-        players = {p.user_id: p for p in storage.players(guild_id, [r.user_id for r in results])}
+        players = players_view(rscope, [r.user_id for r in results])
         reset_unix = (
-            int(service.next_finalize_at(now).timestamp()) if n == calendar.current(now) else None
+            int((calendar.end(calendar.current(now)) + service.grace).timestamp())
+            if n == calendar.current(now)
+            else None
         )
-        outcome = service.rate_day(guild_id, n, results)
+        outcome = service.rate_day(rscope, n, results)
         board = live_table(
             n,
             results,
@@ -106,18 +146,23 @@ def register(bot: KrillionBot) -> app_commands.Group:
             performances=outcome.performances,
             reset_unix=reset_unix,
         )
-        await interaction.response.send_message(**board_message(board, f"krillion-{n}-live.png"))
+        await interaction.followup.send(**board_message(board, f"krillion-{n}-live.png"))
 
     @group.command(description="Krillion rating rankings for this server.")
     @app_commands.describe(inactive=f"Also list divers idle for {MAX_INACTIVE_DAYS}+ days")
     async def ratings(interaction: discord.Interaction, inactive: bool = False) -> None:
-        guild_id = guild_of(interaction)
-        players = service.ranked_players(guild_id, bot.now(), inactive)
-        table = ratings_table(players, storage.games_played(guild_id))
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
+        await interaction.response.defer()
+        players = service.ranked_players(rscope, bot.now(), inactive)
+        mem = await guild_members(
+            getattr(interaction, "guild", None), {p.user_id for p in players}
+        )
+        players = [p for p in players if mem is None or p.user_id in mem]
+        table = ratings_table(players, storage.games_played(rscope))
         if table is None:
             await reply(interaction, info("No rated divers yet — finish a day first."))
             return
-        await interaction.response.send_message(**board_message(table, "krillion-ratings.png"))
+        await interaction.followup.send(**board_message(table, "krillion-ratings.png"))
 
     @group.command(description="Who wins the most Krillion days.")
     @app_commands.describe(
@@ -128,16 +173,24 @@ def register(bot: KrillionBot) -> app_commands.Group:
     async def top(
         interaction: discord.Interaction, timeframe: str = "all", ties: bool = False
     ) -> None:
-        guild_id = guild_of(interaction)
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
+        await interaction.response.defer()
         low, high = analytics.puzzle_range(calendar, timeframe, today())
-        rows = storage.results_between(guild_id, low, high)
+        rows = storage.results_between(GLOBAL_GUILD_ID, low, high)
+        mem = await guild_members(getattr(interaction, "guild", None), {r.user_id for r in rows})
+        rows = [
+            r
+            for r in rows
+            if (mem is None or r.user_id in mem)
+            and not storage.is_banned(rscope, r.user_id)
+        ]
         entries = analytics.top(rows, count_ties=ties)
         if not entries:
             noun = "winners" if ties else "outright winners"
             await reply(interaction, alert(f"No Krillion {noun} found for this range."))
             return
         await send_pages(
-            interaction, top_pages(entries, names_for(guild_id), TIMEFRAME_LABEL[timeframe], ties)
+            interaction, top_pages(entries, names_for(rscope), TIMEFRAME_LABEL[timeframe], ties)
         )
 
     # -- personal --------------------------------------------------------
@@ -145,11 +198,13 @@ def register(bot: KrillionBot) -> app_commands.Group:
     @group.command(description="Krillion stats for you or another diver.")
     @app_commands.describe(member="Whose stats (default: you)")
     async def stats(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
-        guild_id = guild_of(interaction)
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
         target = member or interaction.user
-        player = storage.get_player(guild_id, target.id)
-        rows = storage.results_for_user(guild_id, target.id)
-        if player is None or not rows:
+        if not await member_gate(interaction, target):
+            return
+        player = storage.get_player(rscope, target.id)
+        rows = storage.results_for_user(GLOBAL_GUILD_ID, target.id)
+        if not rows:
             await reply(
                 interaction,
                 alert(f"`{target.display_name}` hasn't shared a Krillion result yet."),
@@ -158,8 +213,8 @@ def register(bot: KrillionBot) -> app_commands.Group:
             return
         summary = analytics.summarize(
             target.id,
-            storage.results_between(guild_id),
-            storage.history_for_user(guild_id, target.id),
+            storage.results_between(GLOBAL_GUILD_ID),
+            storage.history_for_user(rscope, target.id),
             calendar,
             calendar.current(bot.now()),
         )
@@ -167,7 +222,7 @@ def register(bot: KrillionBot) -> app_commands.Group:
             interaction,
             "krillion-stats.png",
             stats_plot,
-            player.display_name,
+            player.display_name if player else target.display_name,
             summary,
             rows,
             calendar,
@@ -177,9 +232,11 @@ def register(bot: KrillionBot) -> app_commands.Group:
     async def rating_like(
         interaction: discord.Interaction, member: discord.Member | None, performance: bool
     ) -> None:
-        guild_id = guild_of(interaction)
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
         target = member or interaction.user
-        history = storage.history_for_user(guild_id, target.id)
+        if not await member_gate(interaction, target):
+            return
+        history = storage.history_for_user(rscope, target.id)
         name = target.display_name
         if not history:
             await reply(interaction, alert(f"No Krillion rating for `{name}` yet."))
@@ -224,7 +281,10 @@ def register(bot: KrillionBot) -> app_commands.Group:
         interaction: discord.Interaction, member: discord.Member | None = None, page: int = 1
     ) -> None:
         target = member or interaction.user
-        entries = storage.history_for_user(guild_of(interaction), target.id)
+        if not await member_gate(interaction, target):
+            return
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
+        entries = storage.history_for_user(rscope, target.id)
         if not entries:
             await reply(
                 interaction, alert(f"`{target.display_name}` has no contested Krillion days yet.")
@@ -240,7 +300,9 @@ def register(bot: KrillionBot) -> app_commands.Group:
         interaction: discord.Interaction, member: discord.Member | None = None
     ) -> None:
         target = member or interaction.user
-        rows = storage.results_for_user(guild_of(interaction), target.id)
+        if not await member_gate(interaction, target):
+            return
+        rows = storage.results_for_user(GLOBAL_GUILD_ID, target.id)
         current = calendar.current(bot.now())
         play = analytics.streaks((r.puzzle_number for r in rows), current)
         perfect = analytics.streaks(analytics.perfect_puzzles(rows), current)
@@ -256,7 +318,9 @@ def register(bot: KrillionBot) -> app_commands.Group:
     @app_commands.describe(member="Whose skips (default: you)")
     async def skips(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
         target = member or interaction.user
-        rows = storage.results_for_user(guild_of(interaction), target.id)
+        if not await member_gate(interaction, target):
+            return
+        rows = storage.results_for_user(GLOBAL_GUILD_ID, target.id)
         first, skipped = analytics.skipped_puzzles(
             (r.puzzle_number for r in rows), calendar.current(bot.now())
         )
@@ -283,11 +347,13 @@ def register(bot: KrillionBot) -> app_commands.Group:
         timeframe: str = "all",
         missing: bool = False,
     ) -> None:
-        guild_id = guild_of(interaction)
+        guild_id = GLOBAL_GUILD_ID
         members = [m for m in (player1, player2, player3, player4) if m is not None]
         ids = [m.id for m in members]
         if len(set(ids)) != len(ids):
             await reply(interaction, alert("Pick different divers to compare."), ephemeral=True)
+            return
+        if not await member_gate(interaction, *members):
             return
         low, high = analytics.puzzle_range(calendar, timeframe, today())
         rows = {uid: storage.results_for_user(guild_id, uid, low, high) for uid in ids}
@@ -306,7 +372,7 @@ def register(bot: KrillionBot) -> app_commands.Group:
     @group.command(description="Weekly recap: daily winners and standings.")
     @app_commands.describe(when="A date in the week (YYYY-MM-DD) or 'last' (default: this week)")
     async def week(interaction: discord.Interaction, when: str | None = None) -> None:
-        guild_id = guild_of(interaction)
+        rscope = service.rating_scope(GLOBAL_GUILD_ID, guild_of(interaction))
         now_day = today()
         if when is None:
             anchor = now_day
@@ -320,7 +386,11 @@ def register(bot: KrillionBot) -> app_commands.Group:
                     interaction, alert(f"`{when}` is not a date (`YYYY-MM-DD`)."), ephemeral=True
                 )
                 return
-        recap = bot.week_recap(guild_id, anchor, now_day)
+        mem = await guild_members(
+            getattr(interaction, "guild", None),
+            {r.user_id for r in storage.results_between(GLOBAL_GUILD_ID)},
+        )
+        recap = bot.week_recap(GLOBAL_GUILD_ID, rscope, anchor, now_day, mem)
         if recap.results == 0:
             await reply(
                 interaction, info(f"No Krillion results for the week of {recap.start:%b %d, %Y}.")
@@ -328,7 +398,7 @@ def register(bot: KrillionBot) -> app_commands.Group:
             return
         await interaction.response.defer()
         await interaction.followup.send(
-            file=await bot.week_image(guild_id, recap, interaction.user.id)
+            file=await bot.week_image(GLOBAL_GUILD_ID, rscope, recap, interaction.user.id)
         )
 
     # -- participation ---------------------------------------------------
