@@ -190,11 +190,19 @@ All settings live in `.env` (see `.env.example`):
 | `RATING_DECAY_MAX` | `0.08` | Cap on the per-day decay share as a streak grows |
 | `RATING_DECAY_GRACE` | `0` | Missed days before decay starts |
 | `ADMIN_USER_IDS` | `750888871696269402` | Comma-separated user IDs allowed to run admin commands |
-| `KRILLION_TIMEZONE` | `America/New_York` | Timezone the game resets in |
+| `KRILLION_TIMEZONE` | `America/New_York` | Timezone Krillion resets in |
 | `KRILLION_EPOCH_DATE` | `2026-07-16` | Date of Krillion #1 |
+| `NOILLIRK_EPOCH_DATE` | `2026-09-27` | UTC date of Noillirk #1; resets at 00:00 UTC |
 
-The last two mirror how krillion.io numbers its puzzles; only change them if
-the game changes.
+Krillion resets in its configured timezone; Noillirk always resets at midnight UTC.
+The epoch dates mirror how each game numbers its puzzles. Krillion accepts the
+previous puzzle during `LATE_GRACE_MINUTES`; Noillirk accepts only the current UTC
+puzzle. Both games finalize leaderboards after that configured delay.
+
+Noillirk shares can use any layout. They must contain the name `Noillirk`,
+`No. <current puzzle number>`, an unbroken sequence of exactly seven colored
+squares, and `https://playdaily.org/noillirk`. The displayed height is ignored;
+the seven square values determine the score.
 
 ## Layout
 

@@ -21,3 +21,7 @@ def tiers_for(score: int) -> str:
     assert len(result) == 7
     assert sum(TIER_SCORES[emoji] for emoji in result) == score
     return result
+
+
+def noillirk_share(number: int, squares: str = "🟨🟥🟧🟩🟦⬜⬛") -> str:
+    return f"Noillirk\nNo. {number}\n{squares}\nhttps://playdaily.org/noillirk"

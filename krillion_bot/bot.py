@@ -13,7 +13,7 @@ from .config import Config
 from .discord_util import board_message, guild_members, png_file, utcnow
 from .formatting import final_table
 from .models import GLOBAL_GUILD_ID
-from .parser import NOILLIRK_HEADER_RE, NOILLIRK_SCOPE
+from .parser import NOILLIRK_NAME_RE, NOILLIRK_SCOPE
 from .plot_week import week_plot
 from .puzzle import PuzzleCalendar
 from .service import FinalizedDay, KrillionService, SubmitStatus
@@ -95,7 +95,7 @@ class KrillionBot(discord.Client):
             return
         scope = (
             NOILLIRK_SCOPE
-            if NOILLIRK_HEADER_RE.search(message.content)
+            if NOILLIRK_NAME_RE.search(message.content)
             else GLOBAL_GUILD_ID
         )
         game = "Noillirk" if scope == NOILLIRK_SCOPE else "Krillion"

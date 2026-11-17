@@ -29,10 +29,10 @@ negative so it can never collide with a real or test guild id."""
 
 NOILLIRK_GAME = "Noillirk"
 SQUARE_SCORES = {"🟨": 100, "🟥": 64, "🟧": 32, "🟩": 16, "🟦": 8, "⬜": 4, "⬛": 0}
-SQUARE_EMOJI = frozenset(SQUARE_SCORES)
-NOILLIRK_HEADER_RE = re.compile(
-    r"noillirk.*(?:daily\s*#\s*|no\.\s*)(\d{1,5})\b", re.IGNORECASE
-)
+NOILLIRK_URL = "https://playdaily.org/noillirk"
+NOILLIRK_NAME_RE = re.compile(r"noillirk", re.IGNORECASE)
+_NOILLIRK_NUMBER_RE = re.compile(r"\bno\.\s*(\d{1,5})\b", re.IGNORECASE)
+_NOILLIRK_SQUARES_RE = re.compile(r"(?<![🟨🟥🟧🟩🟦⬜⬛])([🟨🟥🟧🟩🟦⬜⬛]{7})(?![🟨🟥🟧🟩🟦⬜⬛])")
 
 
 @dataclass(frozen=True)
@@ -86,32 +86,24 @@ def parse_result(text: str) -> ParsedResult | None:
     return None
 
 
-def _square_row(line: str) -> str:
-    chars = [c for c in line if c in SQUARE_EMOJI]
-    return "".join(chars) if chars else ""
-
-
 def parse_noillirk(text: str) -> ParsedResult | None:
-    """Return the parsed result or ``None`` if ``text`` is not a Noillirk share.
+    """Extract a Noillirk share from its name, puzzle number, square run and URL.
 
-    The printed metre figure is a transformed display value; the real score is
+    The share URL must be present so lookalike text is not recorded. The
+    printed metre figure is a transformed display value; the real score is
     the sum of the seven square values (see ``SQUARE_SCORES``).
     """
-    lines = [_strip_markdown(line) for line in text.splitlines()]
-    for idx, line in enumerate(lines):
-        m = NOILLIRK_HEADER_RE.search(line)
-        if not m:
-            continue
-        puzzle_number = int(m.group(1))
-        for follow in lines[idx + 1 : idx + 8]:
-            row = _square_row(follow)
-            if row:
-                if len(row) != ROUNDS_PER_DAY:
-                    return None
-                return ParsedResult(
-                    puzzle_number=puzzle_number,
-                    score=sum(SQUARE_SCORES[c] for c in row),
-                    tiers=row,
-                )
+    if NOILLIRK_URL not in text:
         return None
-    return None
+    if NOILLIRK_NAME_RE.search(text.replace(NOILLIRK_URL, "")) is None:
+        return None
+    number = _NOILLIRK_NUMBER_RE.search(text)
+    squares = _NOILLIRK_SQUARES_RE.search(text)
+    if number is None or squares is None:
+        return None
+    tiers = squares.group(1)
+    return ParsedResult(
+        puzzle_number=int(number.group(1)),
+        score=sum(SQUARE_SCORES[c] for c in tiers),
+        tiers=tiers,
+    )

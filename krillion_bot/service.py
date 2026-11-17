@@ -8,7 +8,7 @@ from enum import Enum
 from zoneinfo import ZoneInfo
 
 from .parser import (
-    NOILLIRK_HEADER_RE,
+    NOILLIRK_NAME_RE,
     NOILLIRK_SCOPE,
     ParsedResult,
     parse_noillirk,
@@ -158,7 +158,7 @@ class KrillionService:
         now: datetime,
         source_guild_id: int = 0,
     ) -> SubmitOutcome:
-        noillirk = NOILLIRK_HEADER_RE.search(text) is not None
+        noillirk = NOILLIRK_NAME_RE.search(text) is not None
         scope = NOILLIRK_SCOPE if noillirk else guild_id
         cal = self.calendar_for(scope)
         current = cal.current(now)
